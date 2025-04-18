@@ -19,7 +19,7 @@ const int WIDTH       = 3840;
 const int HEIGHT      = 2160;
 const int NUM_CIRCLES = 10000;
 const int FRAME_RATE  = 60;
-const int NUM_FRAMES  = FRAME_RATE * 60;  // 1 minute
+const int NUM_FRAMES  = FRAME_RATE * 60*60;  // 1 minute
 const double FADE     = 0.1;              // 10% fade
 
 // Spatial-hash grid
