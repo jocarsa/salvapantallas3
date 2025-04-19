@@ -8,7 +8,7 @@
 const int WIDTH = 3840;
 const int HEIGHT = 2160;
 const int FPS = 60;
-const int DURATION = 60 * 60; // 1 hour
+const int DURATION = 60 * 5; // 5 min
 const int CELL_SIZE = 4; // Cell size in pixels
 
 // CUDA Kernel for updating the grid

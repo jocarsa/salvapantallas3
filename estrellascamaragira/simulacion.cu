@@ -128,7 +128,7 @@ void drawShapeCPU(cv::Mat &temp, const Box &b, const cv::Matx33f &R, int width, 
 int main() {
     const int WIDTH = 1920, HEIGHT = 1080;
     const int FPS = 60;
-    const int DURATION_SEC = 3600; // 60 minutes
+    const int DURATION_SEC = 60; // 10 minutes
     const int TOTAL_FRAMES = FPS * DURATION_SEC;
     
     std::mt19937 rng(std::random_device{}());
