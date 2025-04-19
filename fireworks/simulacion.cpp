@@ -26,10 +26,10 @@ struct Particle {
 };
 
 int main() {
-    const int width = 1920;
-    const int height = 1080;
+    const int width = 3840;
+    const int height = 2160;
     const int fps = 60;
-    const int durationMin = 60;
+    const int durationMin = 60*10;
     const int totalFrames = durationMin * 60 * fps;
     const double gravity = 0.2;
 
@@ -52,11 +52,13 @@ int main() {
     const int    launchInterval   = 200;
     const double widthSpread      = 2.0;
 
-    // Glow effect parameters
-    const bool enableGlow       = false;
-    const double glowIntensity  = 0.1;    // strength of the glow blend [0,1]
-    const int glowKernelSize    = 21;     // must be odd: higher = softer glow
+    // Glow effect parameters (customizable)
+    const bool   enableGlow       = true;      // toggle glow overlay
+    const double glowIntensity    = 20;       // strength of the glow blend [0,1]
+    const int    glowKernelSize   = 21;        // must be odd: higher = softer glow
+    const double glowThreshold    = 0.8;       // pixel brightness threshold [0,1]
 
+    // Initialize RNG
     mt19937 rng((unsigned)time(nullptr));
     uniform_real_distribution<double> distX(0, width);
     uniform_real_distribution<double> distAng(0, 2*M_PI);
@@ -72,7 +74,9 @@ int main() {
     vector<Particle> particles;
     particles.reserve(10000);
 
-    Mat canvas(height, width, CV_8UC3, Scalar(0,0,0));
+    // Buffers for trails and rendering with separate glow overlay
+    Mat trailCanvas(height, width, CV_8UC3, Scalar(0,0,0));
+    Mat renderCanvas(height, width, CV_8UC3, Scalar(0,0,0));
 
     string filename = to_string(time(nullptr)) + string("_fireworks.mp4");
     VideoWriter writer(filename,
@@ -88,9 +92,10 @@ int main() {
     auto startTime = Clock::now();
 
     for (int frameIdx = 0; frameIdx < totalFrames; ++frameIdx) {
-        canvas *= trailFadeAlpha;
+        // Fade existing trails
+        trailCanvas *= trailFadeAlpha;
 
-        // launch rockets
+        // Launch rockets
         if (frameIdx % launchInterval == 0) {
             double baseX = distX(rng);
             Particle p;
@@ -111,14 +116,13 @@ int main() {
             p.prevY = p.y;
             p.size = distSize(rng);
             p.multicolor = (distMulti(rng) <= 2);
-            // decide once per rocket for double explosion
             p.willSecondExplode = (distDouble(rng) == 1);
             p.secondDelay = 0;
             particles.push_back(p);
         }
 
         int N = particles.size();
-        // physics update
+        // Physics update
         for (int i = 0; i < N; ++i) {
             auto &p = particles[i];
             p.age++;
@@ -132,9 +136,8 @@ int main() {
         vector<Particle> newParts;
         newParts.reserve(2000);
 
-        // primary explosions
-        for (int i = 0; i < N; ++i) {
-            auto &p = particles[i];
+        // Primary explosions
+        for (auto &p : particles) {
             if (p.generation == 1 && p.age == 40) {
                 for (int k = 0; k < 100; ++k) {
                     Particle q = {};
@@ -154,7 +157,6 @@ int main() {
                         q.b = saturate_cast<uchar>(p.b + distColorJ(rng));
                     }
                     q.alpha = 1.0; q.prevX = q.x; q.prevY = q.y; q.size = distSize(rng);
-                    // inherit double-explode flag and assign delay
                     q.willSecondExplode = p.willSecondExplode;
                     q.secondDelay = p.willSecondExplode ? distDelay(rng) : 0;
                     q.multicolor = p.multicolor;
@@ -163,9 +165,8 @@ int main() {
             }
         }
 
-        // secondary explosions
-        for (int i = 0; i < N; ++i) {
-            auto &p = particles[i];
+        // Secondary explosions
+        for (auto &p : particles) {
             if (p.generation == 2 && p.willSecondExplode && p.age == p.secondDelay) {
                 for (int k = 0; k < 50; ++k) {
                     Particle q = {};
@@ -192,7 +193,7 @@ int main() {
                     || ((p.generation == 2 || p.generation == 3) && p.age > explosionLifetime);
             }), particles.end());
 
-        // draw particles
+        // Draw particles onto trail canvas
         for (auto &p : particles) {
             double dx1 = p.prevX - width/2.0;
             double dy1 = p.prevY - height/2.0;
@@ -207,9 +208,9 @@ int main() {
             Point pt1(int(width/2.0 + dx1), height - int(height/2.0 + dy1));
             Point pt2(int(width/2.0 + dx2), height - int(height/2.0 + dy2));
             Scalar col(p.b*p.alpha, p.g*p.alpha, p.r*p.alpha);
-            line(canvas, pt1, pt2, col, int(p.size), LINE_AA);
+            line(trailCanvas, pt1, pt2, col, int(p.size), LINE_AA);
             if (pt2.inside(Rect(0,0,width,height)))
-                canvas.at<Vec3b>(pt2.y, pt2.x) = Vec3b(
+                trailCanvas.at<Vec3b>(pt2.y, pt2.x) = Vec3b(
                     saturate_cast<uchar>(p.b*p.alpha),
                     saturate_cast<uchar>(p.g*p.alpha),
                     saturate_cast<uchar>(p.r*p.alpha));
@@ -218,15 +219,30 @@ int main() {
             p.alpha -= particleFadeRate;
         }
 
-        // optional glow post-processing
+        // Prepare render canvas from current trails
+        renderCanvas = trailCanvas.clone();
+
+        // Glow overlay post-processing
         if (enableGlow) {
-            Mat glowImg;
-            GaussianBlur(canvas, glowImg, Size(glowKernelSize, glowKernelSize), 0);
-            addWeighted(canvas, 1.0, glowImg, glowIntensity, 0, canvas);
+            Mat glowImg, gray, mask;
+            // Blur the trails to create glow
+            GaussianBlur(trailCanvas, glowImg, Size(glowKernelSize, glowKernelSize), 0);
+            // Convert to grayscale for thresholding
+            cvtColor(glowImg, gray, COLOR_BGR2GRAY);
+            // Apply threshold to isolate bright areas
+            threshold(gray, mask, glowThreshold*255.0, 255, THRESH_BINARY);
+            // Create 3-channel mask
+            Mat glowMask;
+            cvtColor(mask, glowMask, COLOR_GRAY2BGR);
+            // Mask the blurred image
+            bitwise_and(glowImg, glowMask, glowImg);
+            // Overlay glow onto render canvas
+            addWeighted(renderCanvas, 1.0, glowImg, glowIntensity, 0, renderCanvas);
         }
 
-        writer.write(canvas);
-        Mat disp; resize(canvas, disp, Size(width/2, height/2)); imshow("Framebuffer", disp);
+        // Write and display
+        writer.write(renderCanvas);
+        Mat disp; resize(renderCanvas, disp, Size(width/2, height/2)); imshow("Framebuffer", disp);
         if (waitKey(1) == 27) break;
 
         if (frameIdx % 100 == 0) {
