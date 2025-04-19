@@ -164,8 +164,8 @@ public:
     double transparencia;
 
     Comida(double x = -1, double y = -1, double radius = -1, double angle = -1) {
-        this->x = (x >= 0) ? x : random_uniform(0, 1920);
-        this->y = (y >= 0) ? y : random_uniform(0, 1080);
+        this->x = (x >= 0) ? x : random_uniform(0, 3840);
+        this->y = (y >= 0) ? y : random_uniform(0, 2160);
         this->radio = (radius >= 0) ? radius : random_uniform(5, 15);
         this->a = (angle >= 0) ? angle : random_uniform(0, 2 * M_PI);
         this->v = random_uniform(0, 0.25);
@@ -272,8 +272,8 @@ public:
     bool is_stuck;
 
     Pez() {
-        x = random_uniform(0, 1920);
-        y = random_uniform(0, 1080);
+        x = random_uniform(0, 3840);
+        y = random_uniform(0, 2160);
         a = random_uniform(0, 2 * M_PI);
         edad = random_uniform(1, 2);
         tiempo = random_uniform(0, 1);
@@ -423,155 +423,209 @@ public:
         }
     }
 
-    void mueve(Quadtree<Pez>& quadtree) {
-        is_avoiding_collision = false; // Reset collision avoidance flag
+    // Modify the Pez::mueve method to improve collision avoidance
+void mueve(Quadtree<Pez>& quadtree) {
+    is_avoiding_collision = false; // Reset collision avoidance flag
 
-        // Avoidance logic using quadtree
-        double perception_radius = 50; // Adjust based on desired interaction range
-        Rectangle perception_range(x, y, perception_radius, perception_radius);
+    // Avoidance logic using quadtree
+    double perception_radius = 50; // Adjust based on desired interaction range
+    Rectangle perception_range(x, y, perception_radius, perception_radius);
 
-        // Query the quadtree for nearby fishes
-        std::vector<Pez*> nearby_fishes;
-        quadtree.query(perception_range, nearby_fishes);
+    // Query the quadtree for nearby fishes
+    std::vector<Pez*> nearby_fishes;
+    quadtree.query(perception_range, nearby_fishes);
 
-        // Remove self from the list if present
-        nearby_fishes.erase(std::remove_if(nearby_fishes.begin(), nearby_fishes.end(),
-                                         [this](Pez* fish) { return fish == this; }),
-                          nearby_fishes.end());
+    // Remove self from the list if present
+    nearby_fishes.erase(std::remove_if(nearby_fishes.begin(), nearby_fishes.end(),
+                                     [this](Pez* fish) { return fish == this; }),
+                      nearby_fishes.end());
 
-        // Collision avoidance variables
-        double avg_repulsion_x = 0, avg_repulsion_y = 0;
-        int nearby_fish_count = 0;
-
-        double min_distance = std::numeric_limits<double>::infinity();
-        Pez* closest_fish = nullptr;
-
-        for (auto* other_fish : nearby_fishes) {
-            double dist = std::hypot(x - other_fish->x, y - other_fish->y);
-            if (dist < min_distance) {
-                min_distance = dist;
-                closest_fish = other_fish;
-            }
-            if (dist < perception_radius) {
-                // Compute repulsion vector
-                double repulsion_x = x - other_fish->x;
-                double repulsion_y = y - other_fish->y;
-                avg_repulsion_x += repulsion_x / dist; // Normalize and add
-                avg_repulsion_y += repulsion_y / dist;
-                nearby_fish_count++;
-            }
-        }
-
-        // If there are nearby fish to avoid
-        if (nearby_fish_count > 0) {
-            avg_repulsion_x /= nearby_fish_count;
-            avg_repulsion_y /= nearby_fish_count;
-            double avoidance_angle = std::atan2(avg_repulsion_y, avg_repulsion_x);
+    // ---- IMPROVED COLLISION AVOIDANCE ----
+    // Calculate the potential collision point with nearby fish
+    for (auto* other_fish : nearby_fishes) {
+        // Skip dead fish
+        if (other_fish->energia <= 0) continue;
+        
+        double dist = std::hypot(x - other_fish->x, y - other_fish->y);
+        
+        // Only consider fish that are "close enough" to potentially collide
+        if (dist < perception_radius) {
+            // Calculate the relative position and velocity vectors
+            double rel_x = other_fish->x - x;
+            double rel_y = other_fish->y - y;
             
-            // Adjust target angle away from nearby fishes
-            target_angle = std::fmod(avoidance_angle, 2 * M_PI);
-            is_avoiding_collision = true;
-        }
-
-        // Stuck detection logic
-        // Record the position
-        previous_positions.push_back({x, y});
-        if (previous_positions.size() > stuck_threshold) {
-            previous_positions.erase(previous_positions.begin());
-            // Calculate the total movement over the last few frames
-            double total_movement = 0;
-            for (size_t i = 1; i < previous_positions.size(); i++) {
-                total_movement += std::hypot(previous_positions[i].first - previous_positions[i - 1].first,
-                                          previous_positions[i].second - previous_positions[i - 1].second);
-            }
-            // If movement is below a threshold, consider the fish stuck
-            if (total_movement < 1) {
-                stuck_counter++;
-                if (stuck_counter > stuck_threshold) {
-                    is_stuck = true;
-                }
-            } else {
-                stuck_counter = 0;
-                is_stuck = false;
-            }
-        }
-
-        if (is_stuck) {
-            // Fish is stuck in melee, make it run away
-            // Use perception_range to find nearby fishes
-            std::vector<Pez*> nearby_fish_for_stuck;
-            quadtree.query(perception_range, nearby_fish_for_stuck);
+            // Calculate our velocity vector
+            double vel_x = speed * std::cos(a);
+            double vel_y = speed * std::sin(a);
             
-            nearby_fish_for_stuck.erase(
-                std::remove_if(nearby_fish_for_stuck.begin(), nearby_fish_for_stuck.end(),
-                            [this](Pez* fish) { return fish == this; }),
-                nearby_fish_for_stuck.end());
+            // Calculate other fish's velocity vector
+            double other_vel_x = other_fish->speed * std::cos(other_fish->a);
+            double other_vel_y = other_fish->speed * std::sin(other_fish->a);
+            
+            // Calculate relative velocity vector
+            double rel_vel_x = other_vel_x - vel_x;
+            double rel_vel_y = other_vel_y - vel_y;
+            
+            // Calculate the dot product of relative position and velocity
+            double dot_product = rel_x * rel_vel_x + rel_y * rel_vel_y;
+            
+            // If dot product is positive, the fish are moving away from each other
+            // If negative, they're moving towards each other
+            if (dot_product < 0) {
+                // Calculate the square of the minimum distance
+                double rel_vel_squared = rel_vel_x * rel_vel_x + rel_vel_y * rel_vel_y;
+                double min_dist_squared = (rel_x * rel_vel_y - rel_y * rel_vel_x) * 
+                                          (rel_x * rel_vel_y - rel_y * rel_vel_x) / rel_vel_squared;
                 
-            int stuck_nearby_count = nearby_fish_for_stuck.size();
-
-            if (stuck_nearby_count > 0) {
-                // Find the center of the melee
-                double center_x = 0, center_y = 0;
-                for (auto* fish : nearby_fish_for_stuck) {
-                    center_x += fish->x;
-                    center_y += fish->y;
+                // If the minimum distance is small enough, they might collide
+                if (min_dist_squared < (edad * 5)*(edad * 5)) {  // Using fish size for collision radius
+                    // Calculate the time to reach the minimum distance point
+                    double t = -dot_product / rel_vel_squared;
+                    
+                    // If this time is in the near future, take avoidance action
+                    if (t > 0 && t < 1.0) {  // Adjust time threshold as needed
+                        is_avoiding_collision = true;
+                        
+                        // Calculate avoidance direction (perpendicular to approaching direction)
+                        double approach_angle = std::atan2(rel_y, rel_x);
+                        double perp_angle = approach_angle + M_PI/2;
+                        
+                        // Choose direction based on which side we're on
+                        double cross_product = rel_x * vel_y - rel_y * vel_x;
+                        if (cross_product < 0) {
+                            perp_angle = approach_angle - M_PI/2;
+                        }
+                        
+                        // Set target angle to avoid collision
+                        target_angle = perp_angle;
+                        
+                        // Increase turn rate for faster reaction
+                        max_turn_rate *= 1.5;
+                        break;  // Only handle the most imminent collision
+                    }
                 }
-                center_x /= stuck_nearby_count;
-                center_y /= stuck_nearby_count;
-                // Set target angle away from the center
-                target_angle = std::atan2(y - center_y, x - center_x);
-                is_avoiding_collision = true; // Increase speed to avoid collision
-            } else {
-                // No nearby fish, cannot be stuck
-                is_stuck = false;
             }
         }
-
-        // Adjust flapping frequency and max_thrust based on behavior
-        if (is_chasing_food || is_avoiding_collision || is_stuck) {
-            flapping_frequency = base_flapping_frequency * 1.5; // Increase frequency
-            max_thrust = base_max_thrust * 1.5; // Increase thrust
-        } else {
-            flapping_frequency = base_flapping_frequency;
-            max_thrust = base_max_thrust;
-        }
-
-        // Update flapping phase
-        flapping_phase += flapping_frequency * avancevida;
-
-        // Compute thrust (only positive values)
-        double thrust = max_thrust * std::max(std::sin(2 * M_PI * flapping_phase), 0.0);
-
-        // Compute drag
-        double drag = drag_coefficient * speed;
-
-        // Update speed
-        speed += thrust - drag;
-        speed = std::max(speed, 0.0);
-
-        // Cap the speed to prevent excessive speeds
-        double max_speed = 2.0; // Adjust as needed to match original average speed
-        speed = std::min(speed, max_speed);
-
-        // Regular movement logic
-        double angle_diff = angle_difference(a, target_angle);
-        if (std::abs(angle_diff) > max_turn_rate) {
-            double angle_change = angle_diff > 0 ? max_turn_rate : -max_turn_rate;
-            a += angle_change;
-        } else {
-            a = target_angle;
-        }
-
-        a = std::fmod(a + M_PI, 2 * M_PI) - M_PI;
-
-        // Use original movement multiplier
-        x += std::cos(a) * speed * edad * 5;
-        y += std::sin(a) * speed * edad * 5;
-        colisiona();
     }
 
+    // ---- PHYSICAL COLLISION RESOLUTION ----
+    // Check for actual collisions and resolve them
+    for (auto* other_fish : nearby_fishes) {
+        // Skip dead fish
+        if (other_fish->energia <= 0) continue;
+        
+        double fish_radius = edad * 5;  // Approximate fish body size
+        double other_radius = other_fish->edad * 5;
+        double min_distance = fish_radius + other_radius;
+        
+        double dist = std::hypot(x - other_fish->x, y - other_fish->y);
+        
+        // If there's a collision (fish overlap)
+        if (dist < min_distance && dist > 0) {  // dist > 0 avoids division by zero
+            // Calculate normal vector (direction of collision)
+            double nx = (other_fish->x - x) / dist;
+            double ny = (other_fish->y - y) / dist;
+            
+            // Calculate overlap
+            double overlap = min_distance - dist;
+            
+            // Move both fish apart based on their relative masses (using fish size as mass)
+            double total_mass = fish_radius + other_radius;
+            double ratio1 = other_radius / total_mass;
+            double ratio2 = fish_radius / total_mass;
+            
+            // Move this fish
+            x -= nx * overlap * ratio1;
+            y -= ny * overlap * ratio1;
+            
+            // Move other fish (using atomic operations for thread safety)
+            #pragma omp atomic update
+            other_fish->x += nx * overlap * ratio2;
+            #pragma omp atomic update
+            other_fish->y += ny * overlap * ratio2;
+            
+            // Adjust velocity (like a soft elastic collision)
+            // Calculate relative velocity along normal
+            double vel_x1 = speed * std::cos(a);
+            double vel_y1 = speed * std::sin(a);
+            double vel_x2 = other_fish->speed * std::cos(other_fish->a);
+            double vel_y2 = other_fish->speed * std::sin(other_fish->a);
+            
+            double relVelX = vel_x2 - vel_x1;
+            double relVelY = vel_y2 - vel_y1;
+            
+            double relVelDotNormal = relVelX * nx + relVelY * ny;
+            
+            // If objects moving toward each other
+            if (relVelDotNormal > 0) {
+                // Coefficient of restitution (bounciness)
+                double e = 0.5;
+                
+                // Impulse scalar
+                double impulse = (1 + e) * relVelDotNormal / total_mass;
+                
+                // Apply impulse to velocities
+                double impulse_x = impulse * nx;
+                double impulse_y = impulse * ny;
+                
+                // Update this fish's velocity
+                vel_x1 += impulse_x * ratio1;
+                vel_y1 += impulse_y * ratio1;
+                
+                // Update other fish's velocity (using atomic operations)
+                #pragma omp critical
+                {
+                    double new_vel_x2 = vel_x2 - impulse_x * ratio2;
+                    double new_vel_y2 = vel_y2 - impulse_y * ratio2;
+                    
+                    // Update other fish's speed and angle
+                    other_fish->speed = std::hypot(new_vel_x2, new_vel_y2);
+                    other_fish->a = std::atan2(new_vel_y2, new_vel_x2);
+                }
+                
+                // Update this fish's speed and angle
+                speed = std::hypot(vel_x1, vel_y1);
+                a = std::atan2(vel_y1, vel_x1);
+            }
+        }
+    }
+
+    // Update flapping phase
+    flapping_phase += flapping_frequency * avancevida;
+
+    // Compute thrust (only positive values)
+    double thrust = max_thrust * std::max(std::sin(2 * M_PI * flapping_phase), 0.0);
+
+    // Compute drag
+    double drag = drag_coefficient * speed;
+
+    // Update speed
+    speed += thrust - drag;
+    speed = std::max(speed, 0.0);
+
+    // Cap the speed to prevent excessive speeds
+    double max_speed = 2.0; // Adjust as needed to match original average speed
+    speed = std::min(speed, max_speed);
+
+    // Regular movement logic
+    double angle_diff = angle_difference(a, target_angle);
+    if (std::abs(angle_diff) > max_turn_rate) {
+        double angle_change = angle_diff > 0 ? max_turn_rate : -max_turn_rate;
+        a += angle_change;
+    } else {
+        a = target_angle;
+    }
+
+    a = std::fmod(a + M_PI, 2 * M_PI) - M_PI;
+
+    // Move the fish
+    x += std::cos(a) * speed * edad * 5;
+    y += std::sin(a) * speed * edad * 5;
+    colisiona();
+}
+
     void colisiona() {
-        if (x < 0 || x > 1920 || y < 0 || y > 1080) {
+        if (x < 0 || x > 3840 || y < 0 || y > 2160) {
             // If out of bounds, set a target angle to turn back
             target_angle = std::fmod(a + M_PI, 2 * M_PI);
             is_avoiding_collision = true; // Increase speed to avoid boundary
@@ -581,8 +635,8 @@ public:
 
 int main() {
     // Video settings
-    int width = 1920;
-    int height = 1080;
+    int width = 3840;
+    int height = 2160;
     int fps = 60;
     int duration = 60 * 60; // 60 minutes
     int total_frames = fps * duration;
