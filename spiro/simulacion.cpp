@@ -1,200 +1,156 @@
 #include <opencv2/opencv.hpp>
-#include <omp.h>
+#include <cmath>
 #include <vector>
 #include <random>
-#include <chrono>
-#include <cmath>
 #include <ctime>
-#include <iomanip>
-#include <filesystem>
+#include <sstream>
 #include <iostream>
 
-using namespace cv;
-using namespace std;
-using Clock = chrono::high_resolution_clock;
-
-// HSL to RGB conversion
-static Vec3b hslToRgb(double h, double s, double l) {
-    s /= 100.0; l /= 100.0;
-    double c = (1.0 - fabs(2.0*l - 1.0))*s;
-    double x = c * (1.0 - fabs(fmod(h/60.0, 2.0) - 1.0));
-    double m = l - c/2.0;
-    double r=0, g=0, b=0;
-    if (h < 60)      { r = c; g = x; }
-    else if (h < 120){ r = x; g = c; }
-    else if (h < 180){ g = c; b = x; }
-    else if (h < 240){ g = x; b = c; }
-    else if (h < 300){ r = x; b = c; }
-    else             { r = c; b = x; }
-    return Vec3b(
-        uchar((b + m) * 255),
-        uchar((g + m) * 255),
-        uchar((r + m) * 255)
-    );
-}
-
-// Reset state
-void reset(
-    vector<double>& angles,
-    vector<double>& radii,
-    vector<double>& speeds,
-    Mat& trace,
-    Mat& arms,
-    int& lineWidth,
-    mt19937& rng
-) {
-    int N = (int)angles.size();
-    uniform_real_distribution<double> distRad(0.0, 360.0);
-    uniform_int_distribution<int> distLW(5, 125);
-    vector<double> dens = {-8,-7,-6,-5,-4,-3,-2,2,3,4,5,6,7,8};
-    uniform_int_distribution<size_t> distDen(0, dens.size()-1);
-
-    for (int i = 0; i < N; ++i) {
-        angles[i] = 0.0;
-        radii[i] = (i + 1) * (250.0 / N);
-        double denom = dens[distDen(rng)];
-        speeds[i] = CV_PI / denom / 10.0;
-    }
-    trace.setTo(Scalar(255,255,255));
-    arms.setTo(Scalar(255,255,255));
-    lineWidth = distLW(rng);
+// Convert HSL to BGR for OpenCV Scalar
+cv::Scalar hslToBgr(double h, double s, double l) {
+    s /= 100.0;
+    l /= 100.0;
+    double c = (1.0 - std::abs(2.0 * l - 1.0)) * s;
+    double x = c * (1.0 - std::abs(fmod(h / 60.0, 2.0) - 1.0));
+    double m = l - c / 2.0;
+    double r = 0, g = 0, b = 0;
+    if (h < 60)      { r = c;    g = x;    b = 0; }
+    else if (h < 120){ r = x;    g = c;    b = 0; }
+    else if (h < 180){ r = 0;    g = c;    b = x; }
+    else if (h < 240){ r = 0;    g = x;    b = c; }
+    else if (h < 300){ r = x;    g = 0;    b = c; }
+    else             { r = c;    g = 0;    b = x; }
+    r = (r + m) * 255;
+    g = (g + m) * 255;
+    b = (b + m) * 255;
+    return cv::Scalar(b, g, r);
 }
 
 int main() {
-    // Video setup
     const int width = 1920;
     const int height = 1080;
     const int fps = 60;
-    const double minutes = 1.0;
-    const int totalFrames = int(minutes * 60 * fps);
+    const int64_t totalFrames = 60LL * 60 * fps;  // 1 hour
 
-    // Reset tolerance (pixels) and threshold squared
-    const double resetTolerance = 400.0;
-    const double resetThreshold2 = resetTolerance * resetTolerance;
+    // Prepare filename with epoch prefix
+    std::time_t now = std::time(nullptr);
+    std::ostringstream oss;
+    oss << now << "_spirograph.mp4";
+    std::string outputFilename = oss.str();
 
-    // Ensure output directory
-    auto t0 = time(nullptr);
-    filesystem::create_directories("videos");
-    string fname = format("videos/output_%lld.mp4", (long long)t0);
-    VideoWriter writer(
-        fname,
-        VideoWriter::fourcc('M','J','P','G'),
-        fps,
-        Size(width, height)
-    );
+    cv::VideoWriter writer(outputFilename,
+        cv::VideoWriter::fourcc('m','p','4','v'), fps,
+        cv::Size(width, height));
     if (!writer.isOpened()) {
-        cerr << "Cannot open video writer" << endl;
+        std::cerr << "Failed to open video writer: " << outputFilename << std::endl;
         return -1;
     }
 
-    // Canvases
-    Mat trace = Mat::ones(height, width, CV_8UC3) * 255;
-    Mat arms  = Mat::ones(height, width, CV_8UC3) * 255;
-    Mat final;
+    cv::Mat traceCanvas(height, width, CV_8UC3, cv::Scalar(255,255,255));
+    cv::Mat armsCanvas(height, width, CV_8UC3, cv::Scalar(255,255,255));
+    cv::Mat finalFrame;
 
-    // Arm parameters
-    const int N = 2;
-    vector<double> angles(N), radii(N), speeds(N);
-    int lineWidth;
+    std::mt19937 rng(static_cast<unsigned>(std::time(nullptr)));
+    std::uniform_int_distribution<int> distN(2, 4);
+    std::uniform_real_distribution<double> distRadius(0.0, height / 3.0);
 
-    // RNG for main
-    mt19937 rng((unsigned)time(nullptr));
+    std::vector<double> denominators = {-8,-7,-6,-5,-4,-3,-2,2,3,4,5,6,7,8};
 
-    reset(angles, radii, speeds, trace, arms, lineWidth, rng);
+    int N;
+    std::vector<double> angles;
+    std::vector<double> radii;
+    std::vector<double> speeds;
+    double hue, saturation = 100.0, lightness = 50.0;
+    cv::Scalar traceColor;
 
-    const int initialX = width / 2;
-    const int initialY = height / 2;
-    int prevX = 0, prevY = 0;
-    bool drawing = false;
+    auto resetSpiro = [&]() {
+        N = distN(rng);
+        angles.assign(N, 0.0);
+        radii.resize(N);
+        speeds.resize(N);
+        for (int i = 0; i < N; ++i) {
+            radii[i] = distRadius(rng);
+            double d = denominators[rng() % denominators.size()];
+            speeds[i] = M_PI / d / 10.0;
+        }
+        hue = std::uniform_real_distribution<double>(0.0, 360.0)(rng);
+        traceColor = hslToBgr(hue, saturation, lightness);
+        traceCanvas.setTo(cv::Scalar(255,255,255));
+    };
+
+    resetSpiro();
+
+    bool drawingStarted = false;
+    int prevX = width/2, prevY = height/2;
     int firstX = -1, firstY = -1;
 
-    // Color setup
-    uniform_real_distribution<double> distHue(0.0, 360.0);
-    uniform_int_distribution<int> distBool(0, 1);
-    double hue = distHue(rng);
-    bool randomColor = distBool(rng);
-    Vec3b traceCol = hslToRgb(hue, 100.0, 50.0);
-    const double hueStep = 0.5;
+    cv::namedWindow("Frame", cv::WINDOW_NORMAL);
+    cv::resizeWindow("Frame", width/2, height/2);
 
-    auto start = Clock::now();
-    for (int f = 0; f < totalFrames; ++f) {
-        // Clear arms
-        arms.setTo(Scalar(255,255,255));
+    for (int frame = 0; frame < totalFrames; ++frame) {
+        armsCanvas.setTo(cv::Scalar(255,255,255));
+        int x = width/2, y = height/2;
 
-        // Draw arms
-        int x = initialX;
-        int y = initialY;
-        for (int i = 0; i < N; ++i) {
-            double a = angles[i];
-            double r = radii[i];
-            int nx = x + int(cos(a) * r);
-            int ny = y + int(sin(a) * r);
-            line(arms, Point(x,y), Point(nx,ny), Scalar(0,0,0), 5, LINE_AA);
-            circle(arms, Point(x,y), 10, Scalar(0,0,0), FILLED, LINE_AA);
-            circle(arms, Point(nx,ny), 10, Scalar(0,0,0), FILLED, LINE_AA);
-            x = nx;
-            y = ny;
-        }
-        // Update angles
-        for (int i = 0; i < N; ++i)
-            angles[i] += speeds[i];
-
-        // Draw trace
-        if (drawing) {
-            if (randomColor)
-                line(trace, Point(prevX, prevY), Point(x, y), Scalar(0,0,0), lineWidth, LINE_AA);
-            else
-                line(trace, Point(prevX, prevY), Point(x, y), traceCol, lineWidth, LINE_AA);
-        } else {
-            drawing = true;
+        // draw arms
+        for (int j = 0; j < N; ++j) {
+            double ca = std::cos(angles[j]);
+            double sa = std::sin(angles[j]);
+            int nx = x + static_cast<int>(ca * radii[j]);
+            int ny = y + static_cast<int>(sa * radii[j]);
+            cv::line(armsCanvas, cv::Point(x,y), cv::Point(nx,ny), cv::Scalar(0,0,0), 5, cv::LINE_AA);
+            cv::circle(armsCanvas, cv::Point(x,y), 10, cv::Scalar(0,0,0), cv::FILLED, cv::LINE_AA);
+            cv::circle(armsCanvas, cv::Point(nx,ny), 10, cv::Scalar(0,0,0), cv::FILLED, cv::LINE_AA);
+            x = nx; y = ny;
+            angles[j] += speeds[j];
         }
 
-        // Capture first point once (unused for reset now)
-        if (drawing && firstX < 0 && firstY < 0) {
+        // first point capture
+        if (drawingStarted && firstX < 0) {
             firstX = prevX;
             firstY = prevY;
         }
-        prevX = x;
-        prevY = y;
 
-        // Composite
-        multiply(trace, arms, final, 1.0/255.0);
-        writer.write(final);
+        // draw trace
+        if (drawingStarted) {
+            cv::line(traceCanvas, cv::Point(prevX,prevY), cv::Point(x,y), traceColor, 5, cv::LINE_AA);
+        } else {
+            drawingStarted = true;
+        }
+        prevX = x; prevY = y;
 
-        // Update hue
-        hue = fmod(hue + hueStep, 360.0);
-        traceCol = hslToRgb(hue, 100.0, 50.0);
+        // merge trace and arms
+        cv::Mat tf, af;
+        traceCanvas.convertTo(tf, CV_32FC3, 1.0/255.0);
+        armsCanvas.convertTo(af, CV_32FC3, 1.0/255.0);
+        cv::multiply(tf, af, tf);
+        tf.convertTo(finalFrame, CV_8UC3, 255.0);
 
-        // **Restart** whenever the end effector comes within 40px of the center
-        double dx = x - initialX;
-        double dy = y - initialY;
-        if ((dx*dx + dy*dy) < resetThreshold2) {
-            reset(angles, radii, speeds, trace, arms, lineWidth, rng);
-            drawing   = false;
-            firstX    = firstY = -1;
+        writer.write(finalFrame);
+        cv::imshow("Frame", finalFrame);
+
+        // update hue
+        hue = std::fmod(hue + 0.5, 360.0);
+        traceColor = hslToBgr(hue, saturation, lightness);
+
+        // check loop completion
+        if (firstX >= 0) {
+            double dx = x - firstX;
+            double dy = y - firstY;
+            if (std::sqrt(dx*dx + dy*dy) <= 2.0) {
+                resetSpiro();
+                drawingStarted = false;
+                firstX = firstY = -1;
+                prevX = width/2;
+                prevY = height/2;
+            }
         }
 
-        // Display (scaled down)
-        Mat disp;
-        resize(final, disp, Size(width/2, height/2));
-        imshow("Framebuffer", disp);
-        if (waitKey(1) == 1) break;
-
-        // Progress stats
-        if (f % 1000 == 0) {
-            auto now = Clock::now();
-            double elapsed = chrono::duration<double>(now - start).count();
-            double pct = 100.0 * f / totalFrames;
-            double eta = elapsed * (totalFrames - f) / f;
-            cout << "Frame " << f << "/" << totalFrames
-                 << " (" << fixed << setprecision(2) << pct << "% )"
-                 << " - Elapsed: " << elapsed << "s"
-                 << " - ETA: " << eta << "s" << endl;
-        }
+        if (cv::waitKey(1) == 'q') break;
     }
 
     writer.release();
-    destroyAllWindows();
+    cv::destroyAllWindows();
+    std::cout << "Video saved to " << outputFilename << std::endl;
     return 0;
 }
 
