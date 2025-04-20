@@ -8,6 +8,7 @@
 #include <ctime>
 #include <sstream>
 #include <iomanip>
+#include <fstream>  // For font file loading
 
 // Constants
 const int WIDTH = 1920;
@@ -28,6 +29,155 @@ struct MatrixStrip {
     int length;  // Length of the trail
     std::vector<float> intensities;  // Brightness of each character in the trail
     std::vector<char> chars;         // Characters in the trail
+};
+
+// Struct to hold the font data
+struct MatrixFont {
+    cv::Mat glyphImages[128];  // Store pre-rendered images for ASCII characters
+    int charWidth;
+    int charHeight;
+    
+    MatrixFont(const std::string& fontPath, int size) {
+        charWidth = FACTOR;
+        charHeight = FACTOR;
+        
+        // Load the TTF font file
+        std::ifstream fontFile(fontPath, std::ios::binary);
+        if (!fontFile.is_open()) {
+            std::cerr << "Failed to open font file: " << fontPath << std::endl;
+            return;
+        }
+        
+        // We're not using a font library, so we'll pre-render characters as images
+        // For simplicity, we'll create basic green glyphs with a matrix-like appearance
+        
+        // Initialize all characters with empty images
+        for (int i = 0; i < 128; i++) {
+            glyphImages[i] = cv::Mat(charHeight, charWidth, CV_8UC3, cv::Scalar(0, 0, 0));
+        }
+        
+        // Generate simple matrix-like characters
+        // This is a very simplified approach without actual TTF parsing
+        for (char c : TEXT) {
+            int index = static_cast<int>(c);
+            if (index < 0 || index >= 128) continue;
+            
+            // Create a basic "matrix-like" representation of each character
+            cv::Mat glyph(charHeight, charWidth, CV_8UC3, cv::Scalar(0, 0, 0));
+            
+            // Draw a simple representation - for real use, you'd need a proper TTF parser
+            if (c >= '0' && c <= '9') {
+                // Numbers
+                cv::rectangle(glyph, cv::Point(charWidth/5, charHeight/5), 
+                            cv::Point(4*charWidth/5, 4*charHeight/5), 
+                            cv::Scalar(0, 255, 0), 1);
+                
+                // Add a distinctive mark for each number
+                int num = c - '0';
+                for (int i = 0; i < num; i++) {
+                    int x = charWidth/3 + (i % 3) * charWidth/9;
+                    int y = charHeight/3 + (i / 3) * charHeight/9;
+                    cv::circle(glyph, cv::Point(x, y), 1, cv::Scalar(0, 255, 0), -1);
+                }
+            } else {
+                // Letters
+                // Draw a simple representation based on the letter
+                int letterIndex = (c >= 'a') ? (c - 'a') : (c - 'A');
+                
+                // Horizontal lines
+                int numLines = 1 + (letterIndex % 3);
+                for (int i = 0; i < numLines; i++) {
+                    int y = charHeight/4 + i * charHeight/4;
+                    cv::line(glyph, cv::Point(charWidth/5, y), 
+                           cv::Point(4*charWidth/5, y), cv::Scalar(0, 255, 0), 1);
+                }
+                
+                // Vertical lines
+                int numVLines = 1 + ((letterIndex / 3) % 2);
+                for (int i = 0; i < numVLines; i++) {
+                    int x = charWidth/3 + i * charWidth/3;
+                    cv::line(glyph, cv::Point(x, charHeight/5), 
+                           cv::Point(x, 4*charHeight/5), cv::Scalar(0, 255, 0), 1);
+                }
+            }
+            
+            glyphImages[index] = glyph.clone();
+        }
+        
+        fontFile.close();
+        std::cout << "Font initialized with " << TEXT.length() << " characters" << std::endl;
+    }
+    
+    // Draw a character from the font onto the canvas
+    void drawChar(cv::Mat& canvas, char c, int x, int y, const cv::Scalar& color) {
+        int index = static_cast<int>(c);
+        if (index < 0 || index >= 128) return;
+        
+        // Get the glyph image
+        cv::Mat glyph = glyphImages[index].clone();
+        
+        // Apply the color
+        for (int j = 0; j < glyph.rows; j++) {
+            for (int i = 0; i < glyph.cols; i++) {
+                cv::Vec3b& pixel = glyph.at<cv::Vec3b>(j, i);
+                if (pixel[1] > 0) {  // If the pixel is part of the character (green channel > 0)
+                    pixel[0] = static_cast<uchar>(color[0]);
+                    pixel[1] = static_cast<uchar>(color[1]);
+                    pixel[2] = static_cast<uchar>(color[2]);
+                }
+            }
+        }
+        
+        // Find the region of interest in the canvas
+        cv::Rect roi(x, y, charWidth, charHeight);
+        
+        // Adjust ROI if it goes outside canvas boundaries
+        if (x < 0 || y < 0 || x + charWidth > canvas.cols || y + charHeight > canvas.rows) {
+            int x1 = std::max(0, x);
+            int y1 = std::max(0, y);
+            int x2 = std::min(canvas.cols, x + charWidth);
+            int y2 = std::min(canvas.rows, y + charHeight);
+            
+            // Skip if ROI is completely outside
+            if (x1 >= x2 || y1 >= y2) return;
+            
+            cv::Rect canvasRoi(x1, y1, x2 - x1, y2 - y1);
+            cv::Rect glyphRoi(x1 - x, y1 - y, x2 - x1, y2 - y1);
+            
+            // Blend the glyph onto the canvas
+            cv::Mat glyphPart = glyph(glyphRoi);
+            cv::Mat canvasPart = canvas(canvasRoi);
+            
+            // Alpha blending (simple max value)
+            for (int j = 0; j < glyphPart.rows; j++) {
+                for (int i = 0; i < glyphPart.cols; i++) {
+                    cv::Vec3b& canvasPixel = canvasPart.at<cv::Vec3b>(j, i);
+                    cv::Vec3b& glyphPixel = glyphPart.at<cv::Vec3b>(j, i);
+                    
+                    // Simple blending - take the maximum value
+                    canvasPixel[0] = std::max(canvasPixel[0], glyphPixel[0]);
+                    canvasPixel[1] = std::max(canvasPixel[1], glyphPixel[1]);
+                    canvasPixel[2] = std::max(canvasPixel[2], glyphPixel[2]);
+                }
+            }
+        } else {
+            // If ROI is completely inside canvas, use direct blending
+            cv::Mat canvasPart = canvas(roi);
+            
+            // Alpha blending (simple max value)
+            for (int j = 0; j < glyph.rows; j++) {
+                for (int i = 0; i < glyph.cols; i++) {
+                    cv::Vec3b& canvasPixel = canvasPart.at<cv::Vec3b>(j, i);
+                    cv::Vec3b& glyphPixel = glyph.at<cv::Vec3b>(j, i);
+                    
+                    // Simple blending - take the maximum value
+                    canvasPixel[0] = std::max(canvasPixel[0], glyphPixel[0]);
+                    canvasPixel[1] = std::max(canvasPixel[1], glyphPixel[1]);
+                    canvasPixel[2] = std::max(canvasPixel[2], glyphPixel[2]);
+                }
+            }
+        }
+    }
 };
 
 // Random number generator
@@ -62,6 +212,10 @@ std::string getOutputFilename() {
 }
 
 int main() {
+    // Load custom matrix font
+    std::string fontPath = "matrix.ttf";
+    MatrixFont matrixFont(fontPath, FACTOR);
+    
     // Get output filename with timestamp
     std::string outputFilename = getOutputFilename();
     std::cout << "Output will be saved as: " << outputFilename << std::endl;
@@ -107,11 +261,6 @@ int main() {
     // Create window for display
     cv::namedWindow("Matrix Rain", cv::WINDOW_NORMAL);
     cv::resizeWindow("Matrix Rain", WIDTH/2, HEIGHT/2);
-    
-    // Try to load a custom font if available
-    int fontFace = cv::FONT_HERSHEY_SIMPLEX;
-    double fontScale = FACTOR/30.0;
-    int fontThickness = 1;
     
     // Main animation loop
     int totalFrames = FPS * DURATION_SECONDS;
@@ -180,7 +329,6 @@ int main() {
         cv::Mat largeCanvas(HEIGHT, WIDTH, CV_8UC3, cv::Scalar(0, 0, 0));
         
         // Draw characters with proper scaling and intensity
-        #pragma omp parallel for collapse(2)
         for (int y = 0; y < SMALL_HEIGHT; y++) {
             for (int x = 0; x < SMALL_WIDTH; x++) {
                 float intensity = intensityGrid[x][y];
@@ -199,11 +347,11 @@ int main() {
                     }
                     
                     // Scale coordinates for large canvas
-                    cv::Point position(x * FACTOR + FACTOR/2, y * FACTOR + FACTOR);
+                    int posX = x * FACTOR;
+                    int posY = y * FACTOR;
                     
-                    // Draw text with OpenCV's font
-                    cv::putText(largeCanvas, std::string(1, letterGrid[x][y]), 
-                              position, fontFace, fontScale, color, fontThickness, cv::LINE_AA);
+                    // Draw the character using our custom font renderer
+                    matrixFont.drawChar(largeCanvas, letterGrid[x][y], posX, posY, color);
                 }
             }
         }
@@ -229,7 +377,7 @@ int main() {
         
         // Process any key presses (exit on ESC)
         int key = cv::waitKey(1);
-        if (key == 1) // ESC key
+        if (key == 27) // ESC key
             break;
         
         // Calculate how long to wait to maintain desired FPS
