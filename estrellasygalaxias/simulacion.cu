@@ -8,10 +8,10 @@
 // ======================
 // GENERAL CONSTANTS
 // ======================
-const int WIDTH = 1920;
-const int HEIGHT = 1080;
+const int WIDTH = 960;
+const int HEIGHT = 540;
 const int FPS = 60;
-const int DURATION_SEC = 60 * 60; // 60 minutes
+const int DURATION_SEC = 60 * 3; // 60 minutes
 const int TOTAL_FRAMES = FPS * DURATION_SEC;
 const std::string OUTPUT_FILE = "galaxyfield_screensaver_cpu.mp4";
 

@@ -73,7 +73,7 @@ int main() {
     cudaMemcpy(d_newGrid, newGrid.data(), rows * cols * sizeof(uint8_t), cudaMemcpyHostToDevice);
 
     // Initialize OpenCV video writer with FourCC code directly
-    int codec = cv::VideoWriter_fourcc('H', '2', '6', '4'); // or use 'M', 'P', '4', 'V' for MPEG-4 codec
+    int codec = cv::VideoWriter::fourcc('H', '2', '6', '4'); // or use 'M', 'P', '4', 'V' for MPEG-4 codec
     cv::VideoWriter videoWriter("game_of_life.mp4", codec, FPS, cv::Size(WIDTH, HEIGHT));
 
     if (!videoWriter.isOpened()) {
